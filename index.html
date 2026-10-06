@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ur"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Auto Images + Voiceover Video</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f1115;color:#eee;margin:0;padding:14px;max-width:560px;margin:auto}
+h1{font-size:20px}.box{background:#1b1e26;border-radius:12px;padding:12px;margin:12px 0}
+label.b{display:block;background:#2b6cff;color:#fff;text-align:center;padding:14px;border-radius:10px;font-weight:600}
+input[type=file]{display:none}textarea{width:100%;height:150px;border-radius:8px;border:0;padding:8px;box-sizing:border-box;background:#0f1115;color:#eee}
+button{width:100%;padding:15px;border:0;border-radius:10px;background:#22c55e;color:#000;font-size:16px;font-weight:700}
+button:disabled{opacity:.5}select{padding:8px;border-radius:8px;width:100%;background:#0f1115;color:#eee;margin-top:6px}
+small{color:#9aa}#log{font-size:13px;white-space:pre-wrap;color:#9fd}progress{width:100%}
+.th{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}.th img{width:44px;height:44px;object-fit:cover;border-radius:4px}
+</style></head><body>
+<h1>🎬 Auto Video Maker</h1>
+<small>Images + Script + Voiceover → Video (sab automatic)</small>
+
+<div class="box"><b>1) Images folder</b><br><small>Saari images select karein. Naam 1,2,3... ho to order sahi rahega.</small><br><br>
+<label class="b" for="imgs">📁 Images select karein</label>
+<input type="file" id="imgs" accept="image/*" multiple><div id="imgInfo"><small>0 images</small></div><div class="th" id="th"></div></div>
+
+<div class="box"><b>2) Voiceover folder</b><br><br>
+<label class="b" for="aud">🎙️ Voiceover select karein</label>
+<input type="file" id="aud" accept="audio/*" multiple><div id="audInfo"><small>0 audio</small></div></div>
+
+<div class="box"><b>3) Script paste karein</b> (poora, ek sath)<br>
+<textarea id="script" placeholder="Yahan poori script paste karein..."></textarea></div>
+
+<div class="box"><b>Settings</b>
+<select id="ratio"><option value="1280x720">16:9 (YouTube)</option><option value="720x1280">9:16 (Shorts/TikTok)</option><option value="720x720">1:1</option></select>
+<select id="fx"><option value="zoom">Zoom (Ken Burns)</option><option value="none">Sirf images (tez export)</option></select></div>
+
+<button id="go">▶ Video banao</button>
+<div class="box"><progress id="pr" value="0" max="100"></progress><div id="log">Tayyar.</div></div>
+<div id="out"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let imgs=[],auds=[];
+const nat=(a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true});
+const log=t=>$('log').textContent=t;
+$('imgs').onchange=e=>{imgs=[...e.target.files].sort(nat);$('imgInfo').innerHTML='<small>'+imgs.length+' images</small>';
+ $('th').innerHTML='';imgs.slice(0,30).forEach(f=>{const i=new Image();i.src=URL.createObjectURL(f);$('th').appendChild(i)})};
+$('aud').onchange=e=>{auds=[...e.target.files].sort(nat);$('audInfo').innerHTML='<small>'+auds.length+' audio: '+auds.map(a=>a.name).join(', ')+'</small>'};
+
+function audioDur(f){return new Promise((res,rej)=>{const a=new Audio();a.preload='metadata';a.src=URL.createObjectURL(f);
+ a.onloadedmetadata=()=>res(a.duration);a.onerror=()=>rej('Audio read nahi hui')})}
+
+// script ko images ke hisab se balanced hisson mein baantna
+function splitTimes(text,n,total){
+ const sents=text.replace(/\s+/g,' ').split(/(?<=[.!?۔؟])\s+/).filter(s=>s.trim());
+ const wc=sents.map(s=>s.split(' ').length);const W=wc.reduce((a,b)=>a+b,0)||1;
+ if(sents.length<n){return Array(n).fill(total/n)}
+ const cum=[];wc.reduce((a,b,i)=>cum[i]=a+b,0);
+ let cuts=[],last=-1;
+ for(let k=1;k<n;k++){const t=k*W/n;let best=last+1,bd=1e9;
+  for(let i=last+1;i<=sents.length-(n-k)-0;i++){const d=Math.abs(cum[i]-t);if(d<bd){bd=d;best=i}}
+  cuts.push(best);last=best}
+ let words=[],prev=0;
+ cuts.forEach(c=>{words.push(cum[c]-prev);prev=cum[c]});words.push(W-prev);
+ const sum=words.reduce((a,b)=>a+Math.max(b,1),0);
+ return words.map(w=>Math.max(w,1)/sum*total);
+}
+
+function prepImg(file,w,h){return new Promise(res=>{const im=new Image();im.onload=()=>{
+ const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');
+ const s=Math.max(w/im.width,h/im.height);const dw=im.width*s,dh=im.height*s;
+ x.drawImage(im,(w-dw)/2,(h-dh)/2,dw,dh);c.toBlob(b=>b.arrayBuffer().then(a=>res(new Uint8Array(a))),'image/jpeg',.9)};
+ im.src=URL.createObjectURL(file)})}
+
+$('go').onclick=async()=>{
+ try{
+ if(!imgs.length||!auds.length||!$('script').value.trim())return alert('Images, voiceover aur script teeno chahiye.');
+ $('go').disabled=true;$('out').innerHTML='';
+ const [W,H]=$('ratio').value.split('x').map(Number);const zoom=$('fx').value==='zoom';
+ log('Audio length check...');
+ let total=0;for(const a of auds)total+=await audioDur(a);
+ const durs=splitTimes($('script').value,imgs.length,total);
+ log('FFmpeg load ho raha hai (pehli baar 30MB, thora intezar)...');
+ const {FFmpeg}=FFmpegWASM;const {toBlobURL,fetchFile}=FFmpegUtil;
+ let ff;const mk=()=>{ff=new FFmpeg();ff.on('progress',({progress})=>{$('pr').value=Math.min(99,progress*100)})};
+ const hosts=['https://cdn.jsdelivr.net/npm','https://unpkg.com'];
+ let loaded=false,lastErr='';
+ for(const h of hosts){
+  for(const mode of ['direct','blob','esm']){
+   try{
+    log('FFmpeg load: '+h.split('//')[1]+' / '+mode+' ...');
+    mk();const t=mode==='esm'?'esm':'umd';
+    const base=h+'/@ffmpeg/core@0.12.6/dist/'+t;
+    const wk=h+'/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js';
+    const cfg=mode==='direct'
+     ?{classWorkerURL:await toBlobURL(wk,'text/javascript'),coreURL:base+'/ffmpeg-core.js',wasmURL:base+'/ffmpeg-core.wasm'}
+     :{classWorkerURL:await toBlobURL(wk,'text/javascript'),
+       coreURL:await toBlobURL(base+'/ffmpeg-core.js','text/javascript'),
+       wasmURL:await toBlobURL(base+'/ffmpeg-core.wasm','application/wasm')};
+    await ff.load(cfg);loaded=true;break;
+   }catch(e){lastErr=h+' '+mode+': '+(e.message||e)}
+  }
+  if(loaded)break;
+ }
+ if(!loaded)throw new Error('FFmpeg load nahi hua. '+lastErr);
+ // audio
+ let list='';
+ for(let i=0;i<auds.length;i++){const n='a'+i+'.m4a',src='s'+i+'_'+auds[i].name.replace(/[^\w.]/g,'_');
+  await ff.writeFile(src,await fetchFile(auds[i]));
+  await ff.exec(['-i',src,'-vn','-ar','44100','-ac','2','-c:a','aac','-b:a','160k',n]);list+="file '"+n+"'\n"}
+ await ff.writeFile('al.txt',list);
+ await ff.exec(['-f','concat','-safe','0','-i','al.txt','-c','copy','voice.m4a']);
+ // clips
+ let vl='';const fps=25;
+ for(let i=0;i<imgs.length;i++){
+  log('Scene '+(i+1)+' / '+imgs.length+' ban raha hai...');$('pr').value=(i/imgs.length)*90;
+  await ff.writeFile('i'+i+'.jpg',await prepImg(imgs[i],W,H));
+  const fr=Math.max(2,Math.round(durs[i]*fps));
+  const vf=zoom?`zoompan=z='min(zoom+0.0006,1.15)':d=${fr}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps},format=yuv420p`
+              :`fps=${fps},format=yuv420p`;
+  const args=zoom?['-i','i'+i+'.jpg']:['-loop','1','-t',String(durs[i]),'-i','i'+i+'.jpg'];
+  await ff.exec([...args,'-vf',vf,'-c:v','libx264','-preset','ultrafast','-crf','26','c'+i+'.mp4']);
+  await ff.deleteFile('i'+i+'.jpg');vl+="file 'c"+i+".mp4'\n"}
+ await ff.writeFile('vl.txt',vl);
+ log('Video aur voice jod raha hai...');
+ await ff.exec(['-f','concat','-safe','0','-i','vl.txt','-i','voice.m4a','-map','0:v','-map','1:a','-c:v','copy','-c:a','copy','-shortest','final.mp4']);
+ const data=await ff.readFile('final.mp4');
+ const url=URL.createObjectURL(new Blob([data.buffer],{type:'video/mp4'}));
+ $('pr').value=100;log('✅ Video tayyar!');
+ $('out').innerHTML='<video src="'+url+'" controls style="width:100%;border-radius:10px"></video><br><br><a href="'+url+'" download="video.mp4"><button>⬇ MP4 download karein</button></a>';
+ }catch(e){log('Masla: '+(e.message||e));console.error(e)}
+ $('go').disabled=false};
+</script></body></html>
