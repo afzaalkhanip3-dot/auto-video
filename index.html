@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ur"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Auto Images + Voiceover Video</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f1115;color:#eee;margin:0;padding:14px;max-width:560px;margin:auto}
+h1{font-size:20px}.box{background:#1b1e26;border-radius:12px;padding:12px;margin:12px 0}
+label.b{display:block;background:#2b6cff;color:#fff;text-align:center;padding:14px;border-radius:10px;font-weight:600}
+input[type=file]{display:none}textarea{width:100%;height:150px;border-radius:8px;border:0;padding:8px;box-sizing:border-box;background:#0f1115;color:#eee}
+button{width:100%;padding:15px;border:0;border-radius:10px;background:#22c55e;color:#000;font-size:16px;font-weight:700}
+button:disabled{opacity:.5}select{padding:8px;border-radius:8px;width:100%;background:#0f1115;color:#eee;margin-top:6px}
+small{color:#9aa}#log{font-size:13px;white-space:pre-wrap;color:#9fd}progress{width:100%}
+.th{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}.th img{width:44px;height:44px;object-fit:cover;border-radius:4px}
+</style></head><body>
+<h1>🎬 Auto Video Maker</h1>
+<small>Images + Script + Voiceover → Video (sab automatic)</small>
+
+<div class="box"><b>1) Images folder</b><br><small>Saari images select karein. Naam 1,2,3... ho to order sahi rahega.</small><br><br>
+<label class="b" for="imgs">📁 Images select karein</label>
+<input type="file" id="imgs" accept="image/*" multiple><div id="imgInfo"><small>0 images</small></div><div class="th" id="th"></div></div>
+
+<div class="box"><b>2) Voiceover folder</b><br><br>
+<label class="b" for="aud">🎙️ Voiceover select karein</label>
+<input type="file" id="aud" accept="audio/*" multiple><div id="audInfo"><small>0 audio</small></div></div>
+
+<div class="box"><b>3) Script paste karein</b> (poora, ek sath)<br>
+<textarea id="script" placeholder="Yahan poori script paste karein..."></textarea></div>
+
+<div class="box"><b>Settings</b>
+<select id="ratio"><option value="1280x720">16:9 (YouTube)</option><option value="720x1280">9:16 (Shorts/TikTok)</option><option value="720x720">1:1</option></select>
+<select id="fx"><option value="zoom">Zoom (Ken Burns)</option><option value="none">Sirf images (bina zoom)</option></select></div>
+
+<button id="go">▶ Video banao</button>
+<div class="box"><progress id="pr" value="0" max="100"></progress><div id="log">Tayyar.</div></div>
+<div id="out"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let imgs=[],auds=[];
+const nat=(a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true});
+const log=t=>$('log').textContent=t;
+$('imgs').onchange=e=>{imgs=[...e.target.files].sort(nat);$('imgInfo').innerHTML='<small>'+imgs.length+' images</small>';
+ $('th').innerHTML='';imgs.slice(0,30).forEach(f=>{const i=new Image();i.src=URL.createObjectURL(f);$('th').appendChild(i)})};
+$('aud').onchange=e=>{auds=[...e.target.files].sort(nat);$('audInfo').innerHTML='<small>'+auds.length+' audio</small>'};
+
+function splitTimes(text,n,total){
+ const sents=text.replace(/\s+/g,' ').split(/(?<=[.!?۔؟])\s+/).filter(s=>s.trim());
+ const wc=sents.map(s=>s.split(' ').length);const W=wc.reduce((a,b)=>a+b,0)||1;
+ if(sents.length<n)return Array(n).fill(total/n);
+ const cum=[];wc.reduce((a,b,i)=>cum[i]=a+b,0);
+ let cuts=[],last=-1;
+ for(let k=1;k<n;k++){const t=k*W/n;let best=last+1,bd=1e9;
+  for(let i=last+1;i<=sents.length-(n-k);i++){const d=Math.abs(cum[i]-t);if(d<bd){bd=d;best=i}}
+  cuts.push(best);last=best}
+ let words=[],prev=0;cuts.forEach(c=>{words.push(cum[c]-prev);prev=cum[c]});words.push(W-prev);
+ const sum=words.reduce((a,b)=>a+Math.max(b,1),0);
+ return words.map(w=>Math.max(w,1)/sum*total);
+}
+const failed=[];
+async function loadBmp(f,W,H){
+ try{return await createImageBitmap(f)}catch(e){}
+ try{return await createImageBitmap(f,{resizeWidth:1920,resizeQuality:'low'})}catch(e){}
+ try{const im=new Image();im.src=URL.createObjectURL(f);await im.decode();return im}catch(e){}
+ failed.push(f.name);
+ const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+ x.fillStyle='#111';x.fillRect(0,0,W,H);return c}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+
+$('go').onclick=async()=>{
+ let wl=null;
+ try{
+ if(!window.VideoEncoder||!window.AudioEncoder)return alert('Is browser mein WebCodecs nahi hai. Chrome use karein.');
+ if(!imgs.length||!auds.length||!$('script').value.trim())return alert('Images, voiceover aur script teeno chahiye.');
+ $('go').disabled=true;$('out').innerHTML='';
+ try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+ const t0=Date.now();
+ const [W,H]=$('ratio').value.split('x').map(Number);const zoom=$('fx').value==='zoom';const FPS=24;
+ // 1) audio decode
+ log('Voiceover read ho rahi hai...');
+ const ac=new AudioContext();const sr=ac.sampleRate;let L=[],R=[],n=0;
+ for(const f of auds){const b=await ac.decodeAudioData(await f.arrayBuffer());
+  const c0=b.getChannelData(0),c1=b.numberOfChannels>1?b.getChannelData(1):c0;L.push(c0);R.push(c1);n+=b.length}
+ const cat=arr=>{const o=new Float32Array(n);let p=0;for(const a of arr){o.set(a,p);p+=a.length}return o};
+ const aL=cat(L),aR=cat(R);const total=n/sr;
+ const durs=splitTimes($('script').value,imgs.length,total);
+ // 2) encoder configs
+ let acfg={codec:'mp4a.40.2',sampleRate:sr,numberOfChannels:2,bitrate:128000},acodec='aac';
+ if(!(await AudioEncoder.isConfigSupported(acfg)).supported){acfg={codec:'opus',sampleRate:sr,numberOfChannels:2,bitrate:128000};acodec='opus'}
+ let vcfg=null;
+ for(const c of ['avc1.4d0028','avc1.42001f','avc1.640028']){
+  const x={codec:c,width:W,height:H,bitrate:Math.round(W*H*3),framerate:FPS};
+  if((await VideoEncoder.isConfigSupported(x)).supported){vcfg=x;break}}
+ if(!vcfg)throw new Error('Phone H.264 encoder support nahi karta');
+ const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),
+  video:{codec:'avc',width:W,height:H},audio:{codec:acodec,numberOfChannels:2,sampleRate:sr},fastStart:'in-memory'});
+ let err=null;
+ const aenc=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:e=>err=e});aenc.configure(acfg);
+ const venc=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>err=e});venc.configure(vcfg);
+ // 3) audio encode
+ log('Audio encode ho rahi hai...');
+ const CH=sr;for(let p=0;p<n;p+=CH){const m=Math.min(CH,n-p);const d=new Float32Array(m*2);
+  d.set(aL.subarray(p,p+m),0);d.set(aR.subarray(p,p+m),m);
+  const ad=new AudioData({format:'f32-planar',sampleRate:sr,numberOfFrames:m,numberOfChannels:2,timestamp:Math.round(p/sr*1e6),data:d});
+  aenc.encode(ad);ad.close();if(err)throw err;while(aenc.encodeQueueSize>20)await wait(2)}
+ await aenc.flush();
+ // 4) video frames
+ const cv=document.createElement('canvas');cv.width=W;cv.height=H;const x=cv.getContext('2d');
+ const totalFrames=Math.round(total*FPS);let cumT=0,fidx=0;
+ for(let i=0;i<imgs.length;i++){
+  const bmp=await loadBmp(imgs[i],W,H);
+  const endF=i==imgs.length-1?totalFrames:Math.round((cumT+durs[i])*FPS);cumT+=durs[i];
+  const startF=fidx,len=Math.max(1,endF-startF);
+  for(;fidx<endF;fidx++){
+   const p=(fidx-startF)/len;
+   const z=zoom?(i%2?1.14-0.14*p:1+0.14*p):1;
+   const s=Math.max(W/bmp.width,H/bmp.height)*z;const dw=bmp.width*s,dh=bmp.height*s;
+   x.drawImage(bmp,(W-dw)/2,(H-dh)/2,dw,dh);
+   const vf=new VideoFrame(cv,{timestamp:Math.round(fidx*1e6/FPS),duration:Math.round(1e6/FPS)});
+   venc.encode(vf,{keyFrame:fidx%(FPS*2)==0});vf.close();
+   if(err)throw err;
+   if(venc.encodeQueueSize>6)while(venc.encodeQueueSize>2)await wait(1);
+  }
+  if(bmp.close)bmp.close();
+  $('pr').value=(fidx/totalFrames)*100;
+  log('Scene '+(i+1)+' / '+imgs.length+' tayyar ('+Math.round((Date.now()-t0)/1000)+' sec)');
+ }
+ await venc.flush();muxer.finalize();
+ const url=URL.createObjectURL(new Blob([muxer.target.buffer],{type:'video/mp4'}));
+ $('pr').value=100;log('✅ Video tayyar! Time: '+Math.round((Date.now()-t0)/1000)+' sec'+(acodec=='opus'?' (audio opus)':'')+(failed.length?' | Ye images nahi khuli (kaali lagi): '+failed.join(', '):''));
+ $('out').innerHTML='<video src="'+url+'" controls style="width:100%;border-radius:10px"></video><br><br><a href="'+url+'" download="video.mp4"><button>⬇ MP4 download karein</button></a>';
+ }catch(e){log('Masla: '+(e.message||e));console.error(e)}
+ try{wl&&wl.release()}catch(e){}
+ $('go').disabled=false};
+</script></body></html>
